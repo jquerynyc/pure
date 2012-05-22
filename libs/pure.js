@@ -8,6 +8,13 @@
 
 	Thanks to Rog Peppe for the functional JS jump
 	revision: 2.75
+	
+	History
+	 05/22/2012 
+	 Milan Adamovsky
+	  - Refactor code for performance
+	  - Prettify code for contextual indent
+	              
 */
 var $p, pure;
 
@@ -333,20 +340,14 @@ var $p, pure;
        default:
         templates = sel;
       }
-    
-
-     
-             
-             
-     console.log('TEMPLATES: ', templates);
-     
+         
      templates.prototype = templates;
      templates.prototype.autoRender = autoRender;
      templates.prototype.compile = compile;
      templates.prototype.find = find;
-    // templates.prototype.render = render;
+     templates.prototype.render = render;
      
-   //  templates.prototype._compiler = compiler;
+     templates.prototype._compiler = compiler;
      templates.prototype._error = error;
                    
      return templates;
@@ -699,6 +700,208 @@ var $p, pure;
                  })(node);
     }
 
+
+   // read de loop data, and pass it to the inner rendering function
+   function loopfn(name, dselect, inner, sorter, filter)
+    {
+     return function(ctxt)
+      {
+       var a = dselect(ctxt),
+           old = ctxt[name],
+           temp = { 
+                   "items" : a
+                  },
+           filtered = 0,
+           length,
+           strs = [],
+      buildArg = function(idx, temp, ftr, len){
+       //keep the current loop. Tx to Adam Freidin
+       var save_pos = ctxt.pos,
+        save_item = ctxt.item,
+        save_items = ctxt.items;
+       ctxt.pos = temp.pos = idx;
+       ctxt.item = temp.item = a[ idx ];
+       ctxt.items = a;
+       //if array, set a length property - filtered items
+       typeof len !== 'undefined' &&  (ctxt.length = len);
+       //if filter directive
+       if(typeof ftr === 'function' && ftr.call(ctxt.item, ctxt) === false){
+        filtered++;
+        return;
+       }
+       strs.push( inner.call(ctxt.item, ctxt ) );
+       //restore the current loop
+       ctxt.pos = save_pos;
+       ctxt.item = save_item;
+       ctxt.items = save_items;
+      };
+     ctxt[name] = temp;
+     if( isArray(a) ){
+      length = a.length || 0;
+      // if sort directive
+      if(typeof sorter === 'function'){
+       a.sort(sorter);
+      }
+      //loop on array
+      for(var i = 0, ii = length; i < ii; i++){
+       buildArg(i, temp, filter, length - filtered);
+      }
+     }else{
+      if(a && typeof sorter !== 'undefined'){
+       error('sort is only available on arrays, not objects');
+      }
+      //loop on collections
+      for(var prop in a){
+       a.hasOwnProperty( prop ) && buildArg(prop, temp, filter);
+      }
+     }
+  
+     typeof old !== 'undefined' ? ctxt[name] = old : delete ctxt[name];
+     return strs.join('');
+    };
+   }
+   // generate the template for a loop node
+   function loopgen(dom, sel, loop, fns){
+    var already = false, ls, sorter, filter, prop;
+    for(prop in loop){
+     if(loop.hasOwnProperty(prop)){
+      if(prop === 'sort'){
+       sorter = loop.sort;
+       continue;
+      }else if(prop === 'filter'){
+       filter = loop.filter;
+       continue;
+      }
+      if(already){
+       error('cannot have more than one loop on a target');
+      }
+      ls = prop;
+      already = true;
+     }
+    }
+    if(!ls){
+     error('Error in the selector: ' + sel + '\nA directive action must be a string, a function or a loop(<-)');
+    }
+    var dsel = loop[ls];
+    // if it's a simple data selector then we default to contents, not replacement.
+    if(typeof(dsel) === 'string' || typeof(dsel) === 'function'){
+     loop = {};
+     loop[ls] = {root: dsel};
+     return loopgen(dom, sel, loop, fns);
+    }
+    var spec = parseloopspec(ls),
+     itersel = dataselectfn(spec.sel),
+     target = gettarget(dom, sel, true),
+     nodes = target.nodes;
+  
+    for(i = 0; i < nodes.length; i++){
+     var node = nodes[i],
+      inner = compiler(node, dsel);
+     fns[fns.length] = wrapquote(target.quotefn, loopfn(spec.name, itersel, inner, sorter, filter));
+     target.nodes = [node];  // N.B. side effect on target.
+     setsig(target, fns.length - 1);
+    }
+    return target;
+   }
+ 
+   // parse and check the loop directive
+   function parseloopspec(p)
+    {
+     var m = p.match( /^(\w+)\s*<-\s*(\S+)?$/ );
+     if (m === null)
+      error('bad loop spec: "' + p + '"');
+    
+     if (m[1] === 'item')
+      error('"item<-..." is a reserved word for the current running iteration.\n\nPlease choose another name for your loop.');
+    
+     if(!m[2] || m[2].toLowerCase() === 'context' ) //undefined or space(IE)
+      m[2] = function(ctxt){return ctxt.context;};
+     else if ((m[2] && m[2].indexOf('context') === 0 )) //undefined or space(IE)
+      m[2] = dataselectfn( m[2].replace(/^context\.?/, '') );
+    
+     return {
+             "name" : m[1], 
+             "sel" : m[2]
+            };
+    }
+
+
+   //compile with the directive as argument
+   // run the template function on the context argument
+   // return an HTML string
+   // should replace the template and return this
+   function render(ctxt, directive)
+    {
+     var fn = typeof directive === 'function' && directive, 
+         i = 0, 
+         ii = this.length;
+         
+     for (; i < ii; i++)
+      {
+       this[i] = replaceWith(this[i], 
+                             (fn || plugins.compile(directive, 
+                                                    false, 
+                                                    this[i]))(ctxt, 
+                                                              false));
+      }
+      
+     context = null;
+     
+     return this;
+    }
+
+   function replaceWith(elm, html) 
+    {
+     var ne,
+         ep = elm.parentNode,
+         depth = 0;
+     if (!ep)
+      { //if no parents
+       ep = document.createElement('DIV');
+       ep.appendChild(elm);
+      }
+      
+     switch (elm.tagName) 
+      {
+       case 'TBODY': 
+       case 'THEAD': 
+       case 'TFOOT':
+        html = '<TABLE>' + html + '</TABLE>';
+        depth = 1;
+        break;
+       case 'TR':
+        html = '<TABLE><TBODY>' + html + '</TBODY></TABLE>';
+        depth = 2;
+        break;
+       case 'TD': 
+       case 'TH':
+        html = '<TABLE><TBODY><TR>' + html + '</TR></TBODY></TABLE>';
+        depth = 3;
+        break;
+      }
+     tmp = document.createElement('SPAN');
+     tmp.style.display = 'none';
+     document.body.appendChild(tmp);
+     tmp.innerHTML = html;
+     ne = tmp.firstChild;
+     
+     while (depth--) 
+      {
+       ne = ne.firstChild;
+      }
+      
+     ep.insertBefore(ne, elm);
+     ep.removeChild(elm);
+     document.body.removeChild(tmp);
+     
+     elm = ne;
+   
+     ne = 
+     ep = null;
+     
+     return elm;
+    }
+    
    function setsig(target, n)
     {
      var i = 0,
@@ -723,210 +926,6 @@ var $p, pure;
  
   })();
   
-function xcore(sel, ctxt, plugins){
-
-
-
-
-
-
-
-	/* * * * * * * * * * * * * * * * * * * * * * * * * *
-		core functions
-	 * * * * * * * * * * * * * * * * * * * * * * * * * */
-
-
-
-
-
-
-
-
-
-
-
-	// parse and check the loop directive
-	function parseloopspec(p){
-		var m = p.match( /^(\w+)\s*<-\s*(\S+)?$/ );
-		if(m === null){
-			error('bad loop spec: "' + p + '"');
-		}
-		if(m[1] === 'item'){
-			error('"item<-..." is a reserved word for the current running iteration.\n\nPlease choose another name for your loop.');
-		}
-		if( !m[2] || m[2].toLowerCase() === 'context' ){ //undefined or space(IE)
-			m[2] = function(ctxt){return ctxt.context;};
-		}else if( (m[2] && m[2].indexOf('context') === 0 ) ){ //undefined or space(IE)
-			m[2] = dataselectfn( m[2].replace(/^context\.?/, '') );
-		}
-		return {name: m[1], sel: m[2]};
-	}
-
-
-
-
-
-
-	// read de loop data, and pass it to the inner rendering function
-	function loopfn(name, dselect, inner, sorter, filter){
-		return function(ctxt){
-			var a = dselect(ctxt),
-				old = ctxt[name],
-				temp = { items : a },
-				filtered = 0,
-				length,
-				strs = [],
-				buildArg = function(idx, temp, ftr, len){
-					//keep the current loop. Tx to Adam Freidin
-					var save_pos = ctxt.pos,
-						save_item = ctxt.item,
-						save_items = ctxt.items;
-					ctxt.pos = temp.pos = idx;
-					ctxt.item = temp.item = a[ idx ];
-					ctxt.items = a;
-					//if array, set a length property - filtered items
-					typeof len !== 'undefined' &&  (ctxt.length = len);
-					//if filter directive
-					if(typeof ftr === 'function' && ftr.call(ctxt.item, ctxt) === false){
-						filtered++;
-						return;
-					}
-					strs.push( inner.call(ctxt.item, ctxt ) );
-					//restore the current loop
-					ctxt.pos = save_pos;
-					ctxt.item = save_item;
-					ctxt.items = save_items;
-				};
-			ctxt[name] = temp;
-			if( isArray(a) ){
-				length = a.length || 0;
-				// if sort directive
-				if(typeof sorter === 'function'){
-					a.sort(sorter);
-				}
-				//loop on array
-				for(var i = 0, ii = length; i < ii; i++){
-					buildArg(i, temp, filter, length - filtered);
-				}
-			}else{
-				if(a && typeof sorter !== 'undefined'){
-					error('sort is only available on arrays, not objects');
-				}
-				//loop on collections
-				for(var prop in a){
-					a.hasOwnProperty( prop ) && buildArg(prop, temp, filter);
-				}
-			}
-
-			typeof old !== 'undefined' ? ctxt[name] = old : delete ctxt[name];
-			return strs.join('');
-		};
-	}
-	// generate the template for a loop node
-	function loopgen(dom, sel, loop, fns){
-		var already = false, ls, sorter, filter, prop;
-		for(prop in loop){
-			if(loop.hasOwnProperty(prop)){
-				if(prop === 'sort'){
-					sorter = loop.sort;
-					continue;
-				}else if(prop === 'filter'){
-					filter = loop.filter;
-					continue;
-				}
-				if(already){
-					error('cannot have more than one loop on a target');
-				}
-				ls = prop;
-				already = true;
-			}
-		}
-		if(!ls){
-			error('Error in the selector: ' + sel + '\nA directive action must be a string, a function or a loop(<-)');
-		}
-		var dsel = loop[ls];
-		// if it's a simple data selector then we default to contents, not replacement.
-		if(typeof(dsel) === 'string' || typeof(dsel) === 'function'){
-			loop = {};
-			loop[ls] = {root: dsel};
-			return loopgen(dom, sel, loop, fns);
-		}
-		var spec = parseloopspec(ls),
-			itersel = dataselectfn(spec.sel),
-			target = gettarget(dom, sel, true),
-			nodes = target.nodes;
-
-		for(i = 0; i < nodes.length; i++){
-			var node = nodes[i],
-				inner = compiler(node, dsel);
-			fns[fns.length] = wrapquote(target.quotefn, loopfn(spec.name, itersel, inner, sorter, filter));
-			target.nodes = [node];		// N.B. side effect on target.
-			setsig(target, fns.length - 1);
-		}
-		return target;
-	}
-
-
-
-
-
-
-	//compile with the directive as argument
-	// run the template function on the context argument
-	// return an HTML string
-	// should replace the template and return this
-	function render(ctxt, directive){
-		var fn = typeof directive === 'function' && directive, i = 0, ii = this.length;
-		for(; i < ii; i++){
-			this[i] = replaceWith( this[i], (fn || plugins.compile( directive, false, this[i] ))( ctxt, false ));
-		}
-		context = null;
-		return this;
-	}
-
-
-
-	function replaceWith(elm, html) {
-		var ne,
-			ep = elm.parentNode,
-			depth = 0;
-		if(!ep){ //if no parents
-			ep = document.createElement('DIV');
-			ep.appendChild(elm);
-		}
-		switch (elm.tagName) {
-			case 'TBODY': case 'THEAD': case 'TFOOT':
-				html = '<TABLE>' + html + '</TABLE>';
-				depth = 1;
-			break;
-			case 'TR':
-				html = '<TABLE><TBODY>' + html + '</TBODY></TABLE>';
-				depth = 2;
-			break;
-			case 'TD': case 'TH':
-				html = '<TABLE><TBODY><TR>' + html + '</TR></TBODY></TABLE>';
-				depth = 3;
-			break;
-		}
-		tmp = document.createElement('SPAN');
-		tmp.style.display = 'none';
-		document.body.appendChild(tmp);
-		tmp.innerHTML = html;
-		ne = tmp.firstChild;
-		while (depth--) {
-			ne = ne.firstChild;
-		}
-		ep.insertBefore(ne, elm);
-		ep.removeChild(elm);
-		document.body.removeChild(tmp);
-		elm = ne;
-
-		ne = ep = null;
-		return elm;
-	}
-
-	return plugins;
-};
 
 $p.plugins = {};
 

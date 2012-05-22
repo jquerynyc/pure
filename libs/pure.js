@@ -18,8 +18,25 @@ var $p, pure;
                    "IMG" : 'src',
                    "INPUT" :'value'
                   },
-       selRx = /^(\+)?([^\@\+]+)?\@?([^\+]+)?(\+)?$/; // rx to parse selectors, e.g. "+tr.foo[class]"
-   
+       // check if the argument is an array - thanks salty-horse (Ori Avtalion)
+       isArray = Array.isArray 
+                  ? function(o) 
+                     {
+                      return Array.isArray(o);
+                     } 
+                  : function(o) 
+                     {
+                      return o.push && o.length != null;
+                     },                  
+       selRx = /^(\+)?([^\@\+]+)?\@?([^\+]+)?(\+)?$/, // rx to parse selectors, e.g. "+tr.foo[class]"
+       randomNum = Math.floor(Math.random() * 1000000),
+       
+       // set the signature string that will be replaced at render time
+       Sig = '_s' + randomNum + '_',
+       
+       // another signature to prepend to attributes and avoid checks: style, height, on[events]...
+       attPfx = '_a' + (randomNum + 1) + '_';
+
    $p = 
    pure = init;
 
@@ -44,7 +61,7 @@ var $p, pure;
     }
     
  
-   function checkClass(c, tagName)
+   function checkClass(c, tagName, openLoops, data)
     {
      // read the class
      var ca = c.match(selRx),
@@ -81,7 +98,9 @@ var $p, pure;
      // not found check first level of data
      if (typeof val === 'undefined')
       {
-       val = dataselectfn(cspec.prop)(isArray(data) ? data[0] : data);
+       val = dataselectfn(cspec.prop)(isArray(data) 
+                                       ? data[0] 
+                                       : data);
        // nothing found return
        if (val === '')
         return false;      
@@ -236,16 +255,64 @@ var $p, pure;
      return concatenator(parts, pfns);
     }
 
-    
+   // create a function that concatenates constant string
+   // sections (given in parts) and the results of called
+   // functions to fill in the gaps between parts (fns).
+   // fns[n] fills in the gap between parts[n-1] and parts[n];
+   // fns[0] is unused.
+   // this is the inner template evaluation loop.
+   function concatenator(parts, fns)
+    {
+     return function(ctxt)
+             {
+              var strs = [ parts[ 0 ] ],
+                  n = parts.length,
+                  fnVal, 
+                  pVal, 
+                  attLine, 
+                  pos;
+              try
+               {
+                for (var i = 1; i < n; i++)
+                 {
+                  fnVal = fns[i].call( this, ctxt );
+                  pVal = parts[i];
+           
+                  // if the value is empty and attribute, remove it
+                  if (fnVal === '')
+                   {
+                    attLine = strs[ strs.length - 1 ];
+                    if (( pos = attLine.search( /[^\s]+=\"?$/ )) > -1)
+                     {
+                      strs[ strs.length - 1 ] = attLine.substring( 0, pos );
+                      pVal = pVal.substr( 1 );
+                     }
+                   }
+             
+                  strs[ strs.length ] = fnVal;
+                  strs[ strs.length ] = pVal;
+                 }
+                return strs.join('');
+               }
+              catch (e)
+               {
+                if (console && console.log)
+                 {
+                  console.log( e.stack 
+                                ? e.stack
+                                : e.message + ' (' + e.type + ', ' + e.arguments.join('-') + '). Use Firefox or Chromium/Chrome to get a full stack of the error. ' );
+                 }
+                return '';
+               }
+             };
+    }
+
    function core(sel, ctxt, plugins)
     {
      //get an instance of the plugins    
-     var attPfx,
-         i = 0,
+     var i = 0,
          ii,
-         isArray,
-         randomNum,
-         Sig,
+         
          templates = [],
          templateLength;
      
@@ -267,25 +334,9 @@ var $p, pure;
         templates = sel;
       }
     
-     randomNum = Math.floor(Math.random() * 1000000);
-     
-     // set the signature string that will be replaced at render time
-     Sig = '_s' + randomNum + '_';
-     
-     // another signature to prepend to attributes and avoid checks: style, height, on[events]...
-     attPfx = '_a' + (randomNum + 1) + '_';
+
      
              
-     // check if the argument is an array - thanks salty-horse (Ori Avtalion)
-     isArray = Array.isArray 
-                ? function(o) 
-                   {
-                    return Array.isArray(o);
-                   } 
-                : function(o) 
-                   {
-                    return o.push && o.length != null;
-                   };
              
      console.log('TEMPLATES: ', templates);
      
@@ -301,6 +352,107 @@ var $p, pure;
      return templates;
     }
   
+ // parse a data selector and return a function that
+ // can traverse the data accordingly, given a context.
+ function dataselectfn (sel)
+  {
+   var found = false,
+       i = 0,
+       m,
+       s = sel,
+       parts = [],
+       pfns = [],
+       retStr;
+   
+   if (typeof(sel) === 'function' )
+     //handle false values in function directive
+     return function (ctxt)
+             {
+              var r = sel.call( ctxt.item || ctxt.context || ctxt, ctxt ); 
+              return !r && r !== 0 ? '' : r;
+             };
+
+  //check for a valid js variable name with hyphen(for properties only), $, _ and :
+  m = sel.match(/^[\da-zA-Z\$_\@][\w\$:-]*(\.[\w\$:-]*[^\.])*$/);
+  if (m === null)
+   {
+    // check if literal
+    if (/\'|\"/.test( s.charAt(0) ))
+     {
+      if (/\'|\"/.test( s.charAt(s.length-1) ))
+       {
+        retStr = s.substring(1, s.length-1);
+        return function()
+                {
+                 return retStr; 
+                };
+       }
+     }
+    else
+     {
+      // check if literal + #{var}
+      while ((m = s.match(/#\{([^{}]+)\}/)) !== null)
+       {
+        found = true;
+        parts[i++] = s.slice(0, m.index);
+        pfns[i] = dataselectfn(m[1]);
+        s = s.slice(m.index + m[0].length, s.length);
+       }
+     }
+     
+    if (!found)
+     //constant, return it
+     return function()
+             {
+              return sel; 
+             };
+   
+    parts[i] = s;
+    
+    return concatenator(parts, pfns);
+   }
+   
+  m = sel.split('.');
+  return function (ctxt)
+          {
+           var data = ctxt.context || ctxt,
+               dm,
+               v = ctxt[m[0]],
+               i = 0,
+               n;
+               
+           if (v && typeof v.item !== 'undefined')
+            {
+             i += 1;
+             if (m[i] === 'pos')
+              {
+               //allow pos to be kept by string. Tx to Adam Freidin
+               return v.pos;
+              }
+             else
+              data = v.item;
+            }
+            
+           n = m.length;
+
+           for (; i < n; i++)
+            {
+             if (!data)
+              break;
+              
+             dm = data[ m[i] ];
+             //if it is a function call it
+             data = typeof dm === 'function' 
+                     ? data[ m[i] ].call( data ) 
+                     : dm;
+            }
+   
+           return (!data && data !== 0) 
+                    ? ''
+                    : data;
+          };
+    }
+ 
     // error utility
    function error(e)
     {
@@ -365,7 +517,7 @@ var $p, pure;
           {
            cj = cs[j];
            // check if it is related to a context property
-           cspec = checkClass(cj, ni.tagName);
+           cspec = checkClass(cj, ni.tagName, openLoops, data);
            // if so, store the node, plus the type of data
            if (cspec !== false)
             {
@@ -391,7 +543,123 @@ var $p, pure;
     
      return an;  
     }
+
+   function gettarget(dom, sel, isloop)
+    {
+     var m, 
+         osel, 
+         prepend, 
+         selector, 
+         attr, 
+         append, 
+         target = [];
+     
+     if (typeof sel === 'string')
+      {
+       osel = sel;
+       m = sel.match(selRx);
+       if ( !m ) 
+        error( 'bad selector syntax: ' + sel );
+  
+       prepend = m[1];
+       selector = m[2];
+       attr = m[3];
+       append = m[4];
+  
+       if (selector === '.' || ( !selector && attr ) )
+        target[0] = dom;
+       else
+        target = plugins.find(dom, selector);
     
+       if (!target || target.length === 0)
+        {
+         return error('The node "' + sel + '" was not found in the template:\n' + outerHTML(dom).replace(/\t/g,'  '));
+        }
+      }
+     else
+      {
+       // autoRender node
+       prepend = sel.prepend;
+       attr = sel.attr;
+       append = sel.append;
+       target = [dom];
+      }
+  
+    if( prepend || append ){
+     if( prepend && append ){
+      error('append/prepend cannot take place at the same time');
+     }else if( isloop ){
+      error('no append/prepend/replace modifiers allowed for loop target');
+     }else if( append && isloop ){
+      error('cannot append with loop (sel: ' + osel + ')');
+     }
+    }
+    var setstr, getstr, quotefn, isStyle, isClass, attName, setfn;
+    if(attr){
+     isStyle = (/^style$/i).test(attr);
+     isClass = (/^class$/i).test(attr);
+     attName = isClass ? 'className' : attr;
+     setstr = function(node, s) {
+      node.setAttribute(attPfx + attr, s);
+      if (attName in node && !isStyle) {
+       try{node[attName] = '';}catch(e){} //FF4 gives an error sometimes
+      }
+      if (node.nodeType === 1) {
+       node.removeAttribute(attr);
+       isClass && node.removeAttribute(attName);
+      }
+     };
+     if (isStyle || isClass) {//IE no quotes special care
+      if(isStyle){
+       getstr = function(n){ return n.style.cssText; };
+      }else{
+       getstr = function(n){ return n.className; };
+      }
+     }else {
+      getstr = function(n){ return n.getAttribute(attr); };
+     }
+     quotefn = function(s){ return s.replace(/\"/g, '&quot;'); };
+     if(prepend){
+      setfn = function(node, s){ setstr( node, s + getstr( node )); };
+     }else if(append){
+      setfn = function(node, s){ setstr( node, getstr( node ) + s); };
+     }else{
+      setfn = function(node, s){ setstr( node, s ); };
+     }
+    }else{
+     if (isloop) {
+      setfn = function(node, s) {
+       var pn = node.parentNode;
+       if (pn) {
+        //replace node with s
+        pn.insertBefore(document.createTextNode(s), node.nextSibling);
+        pn.removeChild(node);
+       }
+      };
+     } else {
+      if (prepend) 
+       setfn = function(node, s) { node.insertBefore(document.createTextNode(s), node.firstChild); };
+      else if (append) 
+       setfn = function(node, s) { node.appendChild(document.createTextNode(s));};
+      else 
+       setfn = function(node, s) {
+        while (node.firstChild) { node.removeChild(node.firstChild); }
+        node.appendChild(document.createTextNode(s));
+       };
+      
+     }
+     quotefn = function(s) { return s; };
+    }
+    
+    return { 
+            "attr" : attr, 
+            "nodes" : target, 
+            "set" : setfn, 
+            "sel" : osel, 
+            "quotefn" : quotefn 
+           };
+   }
+ 
    function init(sel, ctxt)
     {
      if (sel && !sel[0] && !sel.length)
@@ -413,6 +681,46 @@ var $p, pure;
      find       = plugins.find;
     }
  
+   // returns the outer HTML of a node
+   function outerHTML(node)
+    {
+     // if IE, Chrome take the internal method otherwise build one
+     return node.outerHTML 
+            || (function(n)
+                 {
+                  var div = document.createElement('div'), 
+                      h;
+                      
+                  div.appendChild(n.cloneNode(true));
+                  h = div.innerHTML;
+                  div = null;
+                  
+                  return h;
+                 })(node);
+    }
+
+   function setsig(target, n)
+    {
+     var i = 0,
+         sig = Sig + n + ':',
+         nodeLength = target.nodes.length;
+         
+     for (; i < nodeLength; i++)
+      {
+       // could check for overlapping targets here.
+       target.set(target.nodes[i], sig);
+      }
+    }
+
+   // returns the string generator function
+   function wrapquote(qfn, f)
+    {
+     return function(ctxt)
+             {
+              return qfn('' + f.call(ctxt.item || ctxt.context, ctxt));
+             };
+    }
+ 
   })();
   
 function xcore(sel, ctxt, plugins){
@@ -430,67 +738,12 @@ function xcore(sel, ctxt, plugins){
 
 
 
-	// returns the outer HTML of a node
-	function outerHTML(node){
-		// if IE, Chrome take the internal method otherwise build one
-		return node.outerHTML || (
-			function(n){
-			var div = document.createElement('div'), h;
-			div.appendChild( n.cloneNode(true) );
-				h = div.innerHTML;
-				div = null;
-				return h;
-			})(node);
-	}
-
-	// returns the string generator function
-	function wrapquote(qfn, f){
-		return function(ctxt){
-			return qfn('' + f.call(ctxt.item || ctxt.context, ctxt));
-		};
-	}
 
 
 
-	// create a function that concatenates constant string
-	// sections (given in parts) and the results of called
-	// functions to fill in the gaps between parts (fns).
-	// fns[n] fills in the gap between parts[n-1] and parts[n];
-	// fns[0] is unused.
-	// this is the inner template evaluation loop.
-	function concatenator(parts, fns){
-		return function(ctxt){
-			var strs = [ parts[ 0 ] ],
-				n = parts.length,
-				fnVal, pVal, attLine, pos;
-			try{
-				for(var i = 1; i < n; i++){
-					fnVal = fns[i].call( this, ctxt );
-					pVal = parts[i];
 
-					// if the value is empty and attribute, remove it
-					if(fnVal === ''){
-						attLine = strs[ strs.length - 1 ];
-						if( ( pos = attLine.search( /[^\s]+=\"?$/ ) ) > -1){
-							strs[ strs.length - 1 ] = attLine.substring( 0, pos );
-							pVal = pVal.substr( 1 );
-						}
-					}
 
-					strs[ strs.length ] = fnVal;
-					strs[ strs.length ] = pVal;
-				}
-				return strs.join('');
-			}catch(e){
-				if(console && console.log){
-					console.log( e.stack ? 
-						e.stack : 
-						e.message + ' (' + e.type + ', ' + e.arguments.join('-') + '). Use Firefox or Chromium/Chrome to get a full stack of the error. ' );
-				}
-				return '';
-			}
-		};
-	}
+
 
 	// parse and check the loop directive
 	function parseloopspec(p){
@@ -509,175 +762,10 @@ function xcore(sel, ctxt, plugins){
 		return {name: m[1], sel: m[2]};
 	}
 
-	// parse a data selector and return a function that
-	// can traverse the data accordingly, given a context.
-	function dataselectfn (sel){
-		if( typeof(sel) === 'function' ){
-			//handle false values in function directive
-			return function ( ctxt ){
-				var r = sel.call( ctxt.item || ctxt.context || ctxt, ctxt ); 
-				return !r && r !== 0 ? '' : r;
-			};
-		}
-		//check for a valid js variable name with hyphen(for properties only), $, _ and :
-		var m = sel.match(/^[\da-zA-Z\$_\@][\w\$:-]*(\.[\w\$:-]*[^\.])*$/);
-		if(m === null){
-			var found = false, s = sel, parts = [], pfns = [], i = 0, retStr;
-			// check if literal
-			if(/\'|\"/.test( s.charAt(0) )){
-				if(/\'|\"/.test( s.charAt(s.length-1) )){
-					retStr = s.substring(1, s.length-1);
-					return function(){ return retStr; };
-				}
-			}else{
-				// check if literal + #{var}
-				while((m = s.match(/#\{([^{}]+)\}/)) !== null){
-					found = true;
-					parts[i++] = s.slice(0, m.index);
-					pfns[i] = dataselectfn(m[1]);
-					s = s.slice(m.index + m[0].length, s.length);
-				}
-			}
-			if(!found){ //constant, return it
-				return function(){ return sel; };
-			}
-			parts[i] = s;
-			return concatenator(parts, pfns);
-		}
-		m = sel.split('.');
-		return function(ctxt){
-			var data = ctxt.context || ctxt,
-				v = ctxt[m[0]],
-				i = 0;
-			if(v && typeof v.item !== 'undefined'){
-				i += 1;
-				if(m[i] === 'pos'){
-					//allow pos to be kept by string. Tx to Adam Freidin
-					return v.pos;
-				}else{
-					data = v.item;
-				}
-			}
-			var n = m.length,
-				dm;
-				
-			for(; i < n; i++){
-				if(!data){break;}
-				dm = data[ m[i] ];
-				//if it is a function call it
-				data = typeof dm === 'function' ? data[ m[i] ].call( data ) : dm;
-			}
-			
-			return (!data && data !== 0) ? '':data;
-		};
-	}
 
-	// wrap in an object the target node/attr and their properties
-	function gettarget(dom, sel, isloop){
-		var osel, prepend, selector, attr, append, target = [];
-		if( typeof sel === 'string' ){
-			osel = sel;
-			var m = sel.match(selRx);
-			if( !m ){
-				error( 'bad selector syntax: ' + sel );
-			}
 
-			prepend = m[1];
-			selector = m[2];
-			attr = m[3];
-			append = m[4];
 
-			if(selector === '.' || ( !selector && attr ) ){
-				target[0] = dom;
-			}else{
-				target = plugins.find(dom, selector);
-			}
-			if(!target || target.length === 0){
-				return error('The node "' + sel + '" was not found in the template:\n' + outerHTML(dom).replace(/\t/g,'  '));
-			}
-		}else{
-			// autoRender node
-			prepend = sel.prepend;
-			attr = sel.attr;
-			append = sel.append;
-			target = [dom];
-		}
 
-		if( prepend || append ){
-			if( prepend && append ){
-				error('append/prepend cannot take place at the same time');
-			}else if( isloop ){
-				error('no append/prepend/replace modifiers allowed for loop target');
-			}else if( append && isloop ){
-				error('cannot append with loop (sel: ' + osel + ')');
-			}
-		}
-		var setstr, getstr, quotefn, isStyle, isClass, attName, setfn;
-		if(attr){
-			isStyle = (/^style$/i).test(attr);
-			isClass = (/^class$/i).test(attr);
-			attName = isClass ? 'className' : attr;
-			setstr = function(node, s) {
-				node.setAttribute(attPfx + attr, s);
-				if (attName in node && !isStyle) {
-					try{node[attName] = '';}catch(e){} //FF4 gives an error sometimes
-				}
-				if (node.nodeType === 1) {
-					node.removeAttribute(attr);
-					isClass && node.removeAttribute(attName);
-				}
-			};
-			if (isStyle || isClass) {//IE no quotes special care
-				if(isStyle){
-					getstr = function(n){ return n.style.cssText; };
-				}else{
-					getstr = function(n){ return n.className;	};
-				}
-			}else {
-				getstr = function(n){ return n.getAttribute(attr); };
-			}
-			quotefn = function(s){ return s.replace(/\"/g, '&quot;'); };
-			if(prepend){
-				setfn = function(node, s){ setstr( node, s + getstr( node )); };
-			}else if(append){
-				setfn = function(node, s){ setstr( node, getstr( node ) + s); };
-			}else{
-				setfn = function(node, s){ setstr( node, s ); };
-			}
-		}else{
-			if (isloop) {
-				setfn = function(node, s) {
-					var pn = node.parentNode;
-					if (pn) {
-						//replace node with s
-						pn.insertBefore(document.createTextNode(s), node.nextSibling);
-						pn.removeChild(node);
-					}
-				};
-			} else {
-				if (prepend) {
-					setfn = function(node, s) { node.insertBefore(document.createTextNode(s), node.firstChild);	};
-				} else if (append) {
-					setfn = function(node, s) { node.appendChild(document.createTextNode(s));};
-				} else {
-					setfn = function(node, s) {
-						while (node.firstChild) { node.removeChild(node.firstChild); }
-						node.appendChild(document.createTextNode(s));
-					};
-				}
-			}
-			quotefn = function(s) { return s; };
-		}
-		return { attr: attr, nodes: target, set: setfn, sel: osel, quotefn: quotefn };
-	}
-
-	function setsig(target, n){
-		var sig = Sig + n + ':';
-		for(var i = 0; i < target.nodes.length; i++){
-			// could check for overlapping targets here.
-			target.set( target.nodes[i], sig );
-		}
-	}
 
 	// read de loop data, and pass it to the inner rendering function
 	function loopfn(name, dselect, inner, sorter, filter){

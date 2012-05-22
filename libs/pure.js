@@ -16,9 +16,8 @@
 	  - Prettify code for contextual indent
 	              
 */
-var $p, pure;
 
-(function ()
+(function (version)
   {     
    // set automatically attributes for some tags
    var autoAttr = {
@@ -34,7 +33,8 @@ var $p, pure;
                   : function(o) 
                      {
                       return o.push && o.length != null;
-                     },                  
+                     },
+       libkey,                  
        selRx = /^(\+)?([^\@\+]+)?\@?([^\+]+)?(\+)?$/, // rx to parse selectors, e.g. "+tr.foo[class]"
        randomNum = Math.floor(Math.random() * 1000000),
        
@@ -45,8 +45,37 @@ var $p, pure;
        attPfx = '_a' + (randomNum + 1) + '_',
        templates = [];
 
-   $p = 
-   pure = init;
+   if (typeof $p !== 'undefined')
+    {
+     $p[version] = init;
+     $p[version].plugins = {};     
+    }
+   else
+    {
+     $p = 
+     pure = init;
+     
+     $p[version] = $p;
+     $p.plugins = {};
+    }
+
+
+   libkey = typeof dojo         !== 'undefined' && 'dojo' ||
+            typeof DOMAssistant !== 'undefined' && 'domassistant' ||
+            typeof jQuery       !== 'undefined' && 'jquery' ||
+            typeof MooTools     !== 'undefined' && 'mootools' ||
+            typeof Prototype    !== 'undefined' && 'prototype' ||
+            typeof Sizzle       !== 'undefined' && 'sizzle' ||
+            typeof Sly          !== 'undefined' && 'sly' ||
+            typeof YUI          !== 'undefined' && 'yui';
+
+   initDrivers();
+
+   libkey && $p[version].libs[libkey]();
+
+   //for node.js
+   if (typeof exports !== 'undefined')
+    exports.$p = $p;
 
    // compile the template with autoRender
    // run the template function on the context argument
@@ -667,7 +696,188 @@ var $p, pure;
     
      return core(sel, ctxt || false);
     }
-      
+    
+   function initDrivers()
+    {
+     $p.libs = {
+                "dojo" : function()
+                          {
+                           if (typeof document.querySelector === 'undefined')
+                            {
+                             $p.plugins.find = function (n, sel)
+                                                {
+                                                 return dojo.query(sel, n);
+                                                };
+                            }
+                          },
+                "domassistant" : function()
+                                  {
+                                   if (typeof document.querySelector === 'undefined')
+                                    {
+                                     $p.plugins.find = function (n, sel)
+                                                        {
+                                                         return $(n).cssSelect(sel);
+                                                        };
+                                    }
+                                    
+                                   DOMAssistant.attach({
+                                                        "publicMethods" : [ 'compile', 'render', 'autoRender'],
+                                                        "compile" : function (directive, ctxt)
+                                                                     {
+                                                                      return $p([this]).compile(directive, ctxt);
+                                                                     },
+                                                        "render" : function(ctxt, directive)
+                                                                    {
+                                                                     return $($p([this]).render(ctxt, directive))[0];
+                                                                    },
+                                                        "autoRender" : function(ctxt, directive)
+                                                                        {
+                                                                         return $( $p([this]).autoRender(ctxt, directive) )[0];
+                                                                        }
+                                                       });
+                                  },
+                "jquery" : function()
+                            {
+                             if (typeof document.querySelector === 'undefined')
+                              {
+                               $p.plugins.find = function(n, sel)
+                                                  {
+                                                   return jQuery(n).find(sel);
+                                                  };
+                              }
+                              
+                             jQuery.fn.extend({
+                                               "directives" : function (directive)
+                                                               {
+                                                                this._pure_d = directive; return this;
+                                                               },
+                                               "compile" : function (directive, ctxt)
+                                                            {
+                                                             return $p(this).compile(this._pure_d || directive, ctxt);
+                                                            },
+                                               "render" : function (ctxt, directive)
+                                                           {
+                                                            return jQuery( $p( this ).render( ctxt, this._pure_d || directive ) );
+                                                           },
+                                               "autoRender" : function (ctxt, directive)
+                                                               {
+                                                                return jQuery( $p( this ).autoRender( ctxt, this._pure_d || directive ) );
+                                                               }
+                                              });
+                            },
+                "mootools" : function()
+                              {
+                               if (typeof document.querySelector === 'undefined')
+                                {
+                                 $p.plugins.find = function(n, sel)
+                                                    {
+                                                     return $(n).getElements(sel);
+                                                    };
+                                }
+                                
+                               Element.implement({
+                                                  "compile" : function (directive, ctxt)
+                                                               {
+                                                                return $p(this).compile(directive, ctxt);
+                                                               },
+                                                  "render" : function (ctxt, directive)
+                                                              {
+                                                               return $p([this]).render(ctxt, directive);
+                                                              },
+                                                  "autoRender" : function (ctxt, directive)
+                                                                  {
+                                                                   return $p([this]).autoRender(ctxt, directive);
+                                                                  }
+                                                 });
+                              },
+                "prototype": function()
+                              {
+                               if (typeof document.querySelector === 'undefined')
+                                {
+                                 $p.plugins.find = function(n, sel)
+                                                    {
+                                                     n = n === document ? n.body : n;
+                                                     return typeof n === 'string' ? $$(n) : $(n).select(sel);
+                                                    };
+                                }
+                                
+                               Element.addMethods({
+                                                   "compile" : function(element, directive, ctxt)
+                                                                {
+                                                                 return $p([element]).compile(directive, ctxt);
+                                                                },
+                                                   "render" : function(element, ctxt, directive)
+                                                               {
+                                                                return $p([element]).render(ctxt, directive);
+                                                               },
+                                                   "autoRender" : function (element, ctxt, directive)
+                                                                   {
+                                                                    return $p([element]).autoRender(ctxt, directive);
+                                                                   }
+                                                  });
+                              },
+                "sizzle" : function()
+                            {
+                             if (typeof document.querySelector === 'undefined')
+                              {
+                               $p.plugins.find = function(n, sel)
+                                                  {
+                                                   return Sizzle(sel, n);
+                                                  };
+                              }
+                            },
+                "sly": function()
+                        {
+                         if (typeof document.querySelector === 'undefined')
+                          {
+                           $p.plugins.find = function(n, sel)
+                                              {
+                                               return Sly(sel, n);
+                                              };
+                          }
+                        },
+                "yui": function()
+                        { //Thanks to https://github.com/soljin
+                         if (typeof document.querySelector === 'undefined')
+                          {
+                           YUI().use("node",
+                                     function(Y)
+                                      {
+                                       $p.plugins.find = function(n, sel)
+                                                          {
+                                                           return Y.NodeList.getDOMNodes(Y.one(n).all(sel));
+                                                          };
+                                      });
+                          }
+                          
+                         YUI.add("pure-yui", 
+                                 function(Y)
+                                  {
+                                   Y.Node.prototype.directives = function (directive)
+                                                                  {
+                                                                   this._pure_d = directive; return this;
+                                                                  };
+                                   Y.Node.prototype.compile = function (directive, ctxt)
+                                                               {
+                                                                return $p([this._node]).compile(this._pure_d || directive, ctxt);
+                                                               };
+                                   Y.Node.prototype.render = function (ctxt, directive)
+                                                              {
+                                                               return Y.one($p([this._node]).render(ctxt, this._pure_d || directive));
+                                                              };
+                                   Y.Node.prototype.autoRender = function (ctxt, directive)
+                                                                  {
+                                                                   return Y.one($p([this._node]).autoRender(ctxt, this._pure_d || directive));
+                                                                  };
+                                  },
+                                 "0.1",
+                                 {
+                                  "requires" : ["node"]
+                                 });
+                        }
+                };     
+    }
+    
    //return a new instance of plugins
    function initPlugins()
     {
@@ -923,151 +1133,7 @@ var $p, pure;
              };
     }
  
-  })();
-  
+  })('3.00');
 
-$p.plugins = {};
 
-$p.libs = {
-	dojo:function(){
-		if(typeof document.querySelector === 'undefined'){
-			$p.plugins.find = function(n, sel){
-				return dojo.query(sel, n);
-			};
-		}
-	},
-	domassistant:function(){
-		if(typeof document.querySelector === 'undefined'){
-			$p.plugins.find = function(n, sel){
-				return $(n).cssSelect(sel);
-			};
-		}
-		DOMAssistant.attach({
-			publicMethods : [ 'compile', 'render', 'autoRender'],
-			compile:function(directive, ctxt){
-				return $p([this]).compile(directive, ctxt);
-			},
-			render:function(ctxt, directive){
-				return $( $p([this]).render(ctxt, directive) )[0];
-			},
-			autoRender:function(ctxt, directive){
-				return $( $p([this]).autoRender(ctxt, directive) )[0];
-			}
-		});
-	},
-	jquery:function(){
-		if(typeof document.querySelector === 'undefined'){
-			$p.plugins.find = function(n, sel){
-				return jQuery(n).find(sel);
-			};
-		}
-		jQuery.fn.extend({
-			directives:function(directive){
-				this._pure_d = directive; return this;
-			},
-			compile:function(directive, ctxt){
-				return $p(this).compile(this._pure_d || directive, ctxt);
-			},
-			render:function(ctxt, directive){
-				return jQuery( $p( this ).render( ctxt, this._pure_d || directive ) );
-			},
-			autoRender:function(ctxt, directive){
-				return jQuery( $p( this ).autoRender( ctxt, this._pure_d || directive ) );
-			}
-		});
-	},
-	mootools:function(){
-		if(typeof document.querySelector === 'undefined'){
-			$p.plugins.find = function(n, sel){
-				return $(n).getElements(sel);
-			};
-		}
-		Element.implement({
-			compile:function(directive, ctxt){
-				return $p(this).compile(directive, ctxt);
-			},
-			render:function(ctxt, directive){
-				return $p([this]).render(ctxt, directive);
-			},
-			autoRender:function(ctxt, directive){
-				return $p([this]).autoRender(ctxt, directive);
-			}
-		});
-	},
-	prototype:function(){
-		if(typeof document.querySelector === 'undefined'){
-			$p.plugins.find = function(n, sel){
-				n = n === document ? n.body : n;
-				return typeof n === 'string' ? $$(n) : $(n).select(sel);
-			};
-		}
-		Element.addMethods({
-			compile:function(element, directive, ctxt){
-				return $p([element]).compile(directive, ctxt);
-			},
-			render:function(element, ctxt, directive){
-				return $p([element]).render(ctxt, directive);
-			},
-			autoRender:function(element, ctxt, directive){
-				return $p([element]).autoRender(ctxt, directive);
-			}
-		});
-	},
-	sizzle:function(){
-		if(typeof document.querySelector === 'undefined'){
-			$p.plugins.find = function(n, sel){
-				return Sizzle(sel, n);
-			};
-		}
-	},
-	sly:function(){
-		if(typeof document.querySelector === 'undefined'){
-			$p.plugins.find = function(n, sel){
-				return Sly(sel, n);
-			};
-		}
-	},
-	yui:function(){ //Thanks to https://github.com/soljin
-		if(typeof document.querySelector === 'undefined'){
-			YUI().use("node",function(Y){
-				$p.plugins.find = function(n, sel){
-					return Y.NodeList.getDOMNodes(Y.one(n).all(sel));
-				};
-			});
-		}
-		YUI.add("pure-yui",function(Y){
-			Y.Node.prototype.directives = function(directive){
-				this._pure_d = directive; return this;
-			};
-			Y.Node.prototype.compile = function(directive, ctxt){
-				return $p([this._node]).compile(this._pure_d || directive, ctxt);
-			};
-			Y.Node.prototype.render = function(ctxt, directive){
-				return Y.one($p([this._node]).render(ctxt, this._pure_d || directive));
-			};
-			Y.Node.prototype.autoRender = function(ctxt, directive){
-				return Y.one($p([this._node]).autoRender(ctxt, this._pure_d || directive));
-			};
-		},"0.1",{requires:["node"]});
-	}
-};
 
-// get lib specifics if available
-(function(){
-	var libkey =
-		typeof dojo         !== 'undefined' && 'dojo' ||
-		typeof DOMAssistant !== 'undefined' && 'domassistant' ||
-		typeof jQuery       !== 'undefined' && 'jquery' ||
-		typeof MooTools     !== 'undefined' && 'mootools' ||
-		typeof Prototype    !== 'undefined' && 'prototype' ||
-		typeof Sizzle       !== 'undefined' && 'sizzle' ||
-		typeof Sly          !== 'undefined' && 'sly' ||
-		typeof YUI          !== 'undefined' && 'yui';
-
-	libkey && $p.libs[libkey]();
-
-	//for node.js
-	if(typeof exports !== 'undefined'){
-		exports.$p = $p;
-	}
-})();

@@ -42,7 +42,8 @@ var $p, pure;
        Sig = '_s' + randomNum + '_',
        
        // another signature to prepend to attributes and avoid checks: style, height, on[events]...
-       attPfx = '_a' + (randomNum + 1) + '_';
+       attPfx = '_a' + (randomNum + 1) + '_',
+       templates = [];
 
    $p = 
    pure = init;
@@ -319,8 +320,6 @@ var $p, pure;
      //get an instance of the plugins    
      var i = 0,
          ii,
-         
-         templates = [],
          templateLength;
      
      if (plugins !== undefined)
@@ -554,7 +553,7 @@ var $p, pure;
          attr, 
          append, 
          target = [];
-     
+    
      if (typeof sel === 'string')
       {
        osel = sel;
@@ -570,7 +569,7 @@ var $p, pure;
        if (selector === '.' || ( !selector && attr ) )
         target[0] = dom;
        else
-        target = plugins.find(dom, selector);
+        target = templates.find(dom, selector);
     
        if (!target || target.length === 0)
         {
@@ -839,10 +838,10 @@ var $p, pure;
      for (; i < ii; i++)
       {
        this[i] = replaceWith(this[i], 
-                             (fn || plugins.compile(directive, 
-                                                    false, 
-                                                    this[i]))(ctxt, 
-                                                              false));
+                             (fn || templates.compile(directive, 
+                                                      false, 
+                                                      this[i]))(ctxt, 
+                                                                false));
       }
       
      context = null;

@@ -9,96 +9,426 @@
 	Thanks to Rog Peppe for the functional JS jump
 	revision: 2.75
 */
+var $p, pure;
 
-var $p, pure = $p = function(){
-	var sel = arguments[0],
-		ctxt = false;
+(function ()
+  {     
+   // set automatically attributes for some tags
+   var autoAttr = {
+                   "IMG" : 'src',
+                   "INPUT" :'value'
+                  },
+       selRx = /^(\+)?([^\@\+]+)?\@?([^\+]+)?(\+)?$/; // rx to parse selectors, e.g. "+tr.foo[class]"
+   
+   $p = 
+   pure = init;
 
-	if(typeof sel === 'string'){
-		ctxt = arguments[1] || false;
-	}else if(sel && !sel[0] && !sel.length){
-		sel = [sel];
-	}
-	return $p.core(sel, ctxt);
-};
+   // compile the template with autoRender
+   // run the template function on the context argument
+   // return an HTML string
+   function autoRender(ctxt, directive)
+    {
+     var fn = this.compile(directive, ctxt, this[0]),
+         i = 0,
+         ii,
+         templateLength = this.length;
+  
+     for(ii = templateLength; i < ii; i++)
+      {
+       this[i] = replaceWith(this[i], fn(ctxt, false));
+      }
+    
+   //  context = null;
+     
+     return this;
+    }
+    
+ 
+   function checkClass(c, tagName)
+    {
+     // read the class
+     var ca = c.match(selRx),
+         attr = ca[3] || autoAttr[tagName],
+         cspec = {
+                  "prepend" : !!ca[1], 
+                  "prop" :ca[2], 
+                  "attr" : attr, 
+                  "append" : !!ca[4], 
+                  "sel" : c
+                 },
+         i, 
+         ii, 
+         loopi, 
+         loopil, 
+         val;
+         
+     // check in existing open loops
+     for (i = openLoops.a.length-1; i >= 0; i--)
+      {
+       loopi = openLoops.a[i];
+       loopil = loopi.l[0];
+       val = loopil && loopil[cspec.prop];
+       if (typeof val !== 'undefined')
+        {
+         cspec.prop = loopi.p + '.' + cspec.prop;
+         if (openLoops.l[cspec.prop] === true)
+          val = val[0];
 
-$p.core = function(sel, ctxt, plugins){
-	//get an instance of the plugins
-	var templates = [];
-	plugins = plugins || getPlugins();
+         break;
+        }
+      }
+      
+     // not found check first level of data
+     if (typeof val === 'undefined')
+      {
+       val = dataselectfn(cspec.prop)(isArray(data) ? data[0] : data);
+       // nothing found return
+       if (val === '')
+        return false;      
+      }
+      
+     // set the spec for autoNode
+     if (isArray(val))
+      {
+       openLoops.a.push({
+                         "l" : val, 
+                         "p" : cspec.prop
+                        });
+       openLoops.l[cspec.prop] = true;
+       cspec.t = 'loop';
+      }
+     else
+      cspec.t = 'str';
 
-	//search for the template node(s)
-	switch(typeof sel){
-		case 'string':
-			templates = plugins.find(ctxt || document, sel);
-			if(templates.length === 0) {
-				error('The template "' + sel + '" was not found');
-			}
-		break;
-		case 'undefined':
-			error('The root of the template is undefined, check your selector');
-		break;
-		default:
-			templates = sel;
-	}
+     return cspec;
+    }
+    
+   // compile the template with directive
+   // if a context is passed, the autoRendering is triggered automatically
+   // return a function waiting the data as argument
+   function compile(directive, ctxt, template)
+    {
+     var rfn = compiler((template || this[0]).cloneNode(true), 
+                        directive, 
+                        ctxt);
+                        
+     return function (context)
+             {
+              return rfn({
+                          "context" : context
+                         });
+             };
+    }
+    
+   // returns a function that, given a context argument,
+   // will render the template defined by dom and directive.
+   function compiler(dom, directive, data, ans)
+    {
+     var cspec,
+         dsel,
+         fns = [],
+         h,
+         i,
+         inner,
+         itersel, 
+         j, 
+         jj,  
+         n, 
+         node,
+         nodes,
+         p,
+         parts,
+         pfns = [],
+         sel,
+         sels,
+         sl,
+         target;
+  
+     // autoRendering nodes parsing -> auto-nodes
+     ans = ans 
+           || data 
+           && getAutoNodes(dom, data);
+     
+     if (data)
+      {
+       // for each auto-nodes
+       while (ans.length > 0)
+        {
+         cspec = ans[0].cspec;
+         n = ans[0].n;
+         ans.splice(0, 1);
+         
+         if (cspec.t === 'str')
+          {
+           // if the target is a value
+           target = gettarget(n, cspec, false);
+           setsig(target, fns.length);
+           fns[fns.length] = wrapquote(target.quotefn, dataselectfn(cspec.prop));
+          }
+         else
+          {
+           // if the target is a loop
+           itersel = dataselectfn(cspec.sel);
+           target = gettarget(n, cspec, true);
+           nodes = target.nodes;
+  
+           for (j = 0, jj = nodes.length; j < jj; j++)
+            {
+             node = nodes[j];
+             inner = compiler(node, false, data, ans);
+             fns[fns.length] = wrapquote(target.quotefn, loopfn(cspec.sel, itersel, inner));
+             target.nodes = [node];
+             setsig(target, fns.length - 1);
+            }
+          }
+        }
+      }
+      
+     // read directives
+     for (sel in directive)
+      {
+       if (directive.hasOwnProperty(sel))
+        {
+         i = 0;
+         dsel = directive[sel];
+         sels = sel.split(/\s*,\s*/); //allow selector separation by quotes
+         sl = sels.length;
+         do
+          {
+           if (typeof(dsel) === 'function' || typeof(dsel) === 'string')
+            {
+             // set the value for the node/attr
+             sel = sels[i];
+             target = gettarget(dom, sel, false);
+             setsig(target, fns.length);
+             fns[fns.length] = wrapquote(target.quotefn, dataselectfn(dsel));
+            }
+           else
+            {
+             // loop on node
+             loopgen(dom, sel, dsel, fns);
+            }
+          }
+         while(++i < sl);
+        }
+      }
+      
+     // convert node to a string
+     h = outerHTML(dom);
+     // IE adds an unremovable "selected, value" attribute
+     // hard replace while waiting for a better solution
+     h = h.replace(/<([^>]+)\s(value\=""|selected)\s?([^>]*)>/ig, "<$1 $3>");
+  
+     // remove attribute prefix
+     h = h.split(attPfx).join('');
+  
+     // slice the html string at "Sig"
+     parts = h.split( Sig );
+     // for each slice add the return string of
+     for (i = 1; i < parts.length; i++)
+      {
+       p = parts[i];
+       // part is of the form "fn-number:..." as placed there by setsig.
+       pfns[i] = fns[ parseInt(p, 10) ];
+       parts[i] = p.substring( p.indexOf(':') + 1 );
+      }
+      
+     return concatenator(parts, pfns);
+    }
 
-	for(var i = 0, ii = templates.length; i < ii; i++){
-		plugins[i] = templates[i];
-	}
-	plugins.length = ii;
+    
+   function core(sel, ctxt, plugins)
+    {
+     //get an instance of the plugins    
+     var attPfx,
+         i = 0,
+         ii,
+         isArray,
+         randomNum,
+         Sig,
+         templates = [],
+         templateLength;
+     
+     if (plugins !== undefined)
+       initPlugins();
+     
+     //search for the template node(s)
+     switch (typeof sel)
+      {
+       case 'string': 
+        templates = find(ctxt || document, sel);
+        if (templates.length === 0) 
+         error('The template "' + sel + '" was not found');
+        break;
+       case 'undefined':
+        error('The root of the template is undefined, check your selector');
+        break;
+       default:
+        templates = sel;
+      }
+    
+     randomNum = Math.floor(Math.random() * 1000000);
+     
+     // set the signature string that will be replaced at render time
+     Sig = '_s' + randomNum + '_';
+     
+     // another signature to prepend to attributes and avoid checks: style, height, on[events]...
+     attPfx = '_a' + (randomNum + 1) + '_';
+     
+             
+     // check if the argument is an array - thanks salty-horse (Ori Avtalion)
+     isArray = Array.isArray 
+                ? function(o) 
+                   {
+                    return Array.isArray(o);
+                   } 
+                : function(o) 
+                   {
+                    return o.push && o.length != null;
+                   };
+             
+     console.log('TEMPLATES: ', templates);
+     
+     templates.prototype = templates;
+     templates.prototype.autoRender = autoRender;
+     templates.prototype.compile = compile;
+     templates.prototype.find = find;
+    // templates.prototype.render = render;
+     
+   //  templates.prototype._compiler = compiler;
+     templates.prototype._error = error;
+                   
+     return templates;
+    }
+  
+    // error utility
+   function error(e)
+    {
+     if (typeof console !== 'undefined')
+      {
+       console.log(e);
+       debugger;
+      }
+      
+     throw ('pure error: ' + e);
+    }
+  
+   // default find using querySelector when available on the browser
+   function find(n, sel)
+    {
+     if(typeof n === 'string')
+      {
+       sel = n;
+       n = false;
+      }
+     console.log("TEMPLATE: ", (n || document).querySelectorAll(sel));
+     return (typeof document.querySelectorAll !== 'undefined')
+              ? (n || document).querySelectorAll(sel)
+              : error('You can test PURE standalone with: iPhone, FF3.5+, Safari4+ and IE8+\n\nTo run PURE on your browser, you need a JS library/framework with a CSS selector engine');
+    }
+  
+   function getAutoNodes(n, data)
+    {
+     var an = [],
+         cj,
+         cs,      
+         cspec,
+         isNodeValue,
+         i = -1, 
+         ii, 
+         j, 
+         jj, 
+         ni,
+         niClass,
+         ns = n.getElementsByTagName('*'), 
+         openLoops = {
+                      "a" : [],
+                      "l" : {}
+                     };
+         
+     //for each node found in the template
+     for (ii = ns.length; i < ii; i++)
+      {
+       ni = i > -1 
+             ? ns[i]
+             : n;
+             
+       niClass = ni.className;
+       
+       if (ni.nodeType === 1 
+           && niClass !== '')
+        {
+         //when a className is found
+         cs = niClass.split(' ');
+         // for each className
+         for (j = 0, jj=cs.length; j<jj; j++)
+          {
+           cj = cs[j];
+           // check if it is related to a context property
+           cspec = checkClass(cj, ni.tagName);
+           // if so, store the node, plus the type of data
+           if (cspec !== false)
+            {
+             isNodeValue = (/nodevalue/i).test(cspec.attr);
+             if (cspec.sel.indexOf('@') > -1 || isNodeValue)
+              {
+               niClass = niClass.replace('@'+cspec.attr, '');
+               
+               if (isNodeValue)
+                {
+                 cspec.attr = false;
+                }
+              }
+              
+             an.push({
+                      "n" : ni, 
+                      "cspec" : cspec
+                     });
+            }
+          }
+        }
+      }
+    
+     return an;  
+    }
+    
+   function init(sel, ctxt)
+    {
+     if (sel && !sel[0] && !sel.length)
+      sel = [sel];
+    
+     return core(sel, ctxt || false);
+    }
+      
+   //return a new instance of plugins
+   function initPlugins()
+    {
+     //get an instance of the plugins
+     var plugins = $p.plugins;
+  
+     // do not overwrite functions if external definition
+     compile    = plugins.compile;
+     render     = plugins.render;
+     autoRender = plugins.autoRender;
+     find       = plugins.find;
+    }
+ 
+  })();
+  
+function xcore(sel, ctxt, plugins){
 
-	// set the signature string that will be replaced at render time
-	var Sig = '_s' + Math.floor( Math.random() * 1000000 ) + '_',
-		// another signature to prepend to attributes and avoid checks: style, height, on[events]...
-		attPfx = '_a' + Math.floor( Math.random() * 1000000 ) + '_',
-		// rx to parse selectors, e.g. "+tr.foo[class]"
-		selRx = /^(\+)?([^\@\+]+)?\@?([^\+]+)?(\+)?$/,
-		// set automatically attributes for some tags
-		autoAttr = {
-			IMG:'src',
-			INPUT:'value'
-		},
-		// check if the argument is an array - thanks salty-horse (Ori Avtalion)
-		isArray = Array.isArray ?
-			function(o) {
-				return Array.isArray(o);
-			} :
-			function(o) {
-				return Object.prototype.toString.call(o) === "[object Array]";
-			};
+
+
+
+
+
 
 	/* * * * * * * * * * * * * * * * * * * * * * * * * *
 		core functions
 	 * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 
-	// error utility
-	function error(e){
-		if(typeof console !== 'undefined'){
-			console.log(e);
-			debugger;
-		}
-		throw('pure error: ' + e);
-	}
 
-	//return a new instance of plugins
-	function getPlugins(){
-		var plugins = $p.plugins,
-			f = function(){};
-		f.prototype = plugins;
-
-		// do not overwrite functions if external definition
-		f.prototype.compile    = plugins.compile || compile;
-		f.prototype.render     = plugins.render || render;
-		f.prototype.autoRender = plugins.autoRender || autoRender;
-		f.prototype.find       = plugins.find || find;
-
-		// give the compiler and the error handling to the plugin context
-		f.prototype._compiler  = compiler;
-		f.prototype._error     = error;
-
-		return new f();
-	}
 
 	// returns the outer HTML of a node
 	function outerHTML(node){
@@ -120,18 +450,7 @@ $p.core = function(sel, ctxt, plugins){
 		};
 	}
 
-	// default find using querySelector when available on the browser
-	function find(n, sel){
-		if(typeof n === 'string'){
-			sel = n;
-			n = false;
-		}
-		if(typeof document.querySelectorAll !== 'undefined'){
-			return (n||document).querySelectorAll( sel );
-		}else{
-			return error('You can test PURE standalone with: iPhone, FF3.5+, Safari4+ and IE8+\n\nTo run PURE on your browser, you need a JS library/framework with a CSS selector engine');
-		}
-	}
+
 
 	// create a function that concatenates constant string
 	// sections (given in parts) and the results of called
@@ -459,163 +778,11 @@ $p.core = function(sel, ctxt, plugins){
 		return target;
 	}
 
-	function getAutoNodes(n, data){
-		var ns = n.getElementsByTagName('*'),
-			an = [],
-			openLoops = {a:[],l:{}},
-			cspec,
-			isNodeValue,
-			i, ii, j, jj, ni, cs, cj;
-		//for each node found in the template
-		for(i = -1, ii = ns.length; i < ii; i++){
-			ni = i > -1 ?ns[i]:n;
-			if(ni.nodeType === 1 && ni.className !== ''){
-				//when a className is found
-				cs = ni.className.split(' ');
-				// for each className
-				for(j = 0, jj=cs.length;j<jj;j++){
-					cj = cs[j];
-					// check if it is related to a context property
-					cspec = checkClass(cj, ni.tagName);
-					// if so, store the node, plus the type of data
-					if(cspec !== false){
-						isNodeValue = (/nodevalue/i).test(cspec.attr);
-						if(cspec.sel.indexOf('@') > -1 || isNodeValue){
-							ni.className = ni.className.replace('@'+cspec.attr, '');
-							if(isNodeValue){
-								cspec.attr = false;
-							}
-						}
-						an.push({n:ni, cspec:cspec});
-					}
-				}
-			}
-		}
 
-		function checkClass(c, tagName){
-			// read the class
-			var ca = c.match(selRx),
-				attr = ca[3] || autoAttr[tagName],
-				cspec = {prepend:!!ca[1], prop:ca[2], attr:attr, append:!!ca[4], sel:c},
-				i, ii, loopi, loopil, val;
-			// check in existing open loops
-			for(i = openLoops.a.length-1; i >= 0; i--){
-				loopi = openLoops.a[i];
-				loopil = loopi.l[0];
-				val = loopil && loopil[cspec.prop];
-				if(typeof val !== 'undefined'){
-					cspec.prop = loopi.p + '.' + cspec.prop;
-					if(openLoops.l[cspec.prop] === true){
-						val = val[0];
-					}
-					break;
-				}
-			}
-			// not found check first level of data
-			if(typeof val === 'undefined'){
-				val = dataselectfn(cspec.prop)(isArray(data) ? data[0] : data);
-				// nothing found return
-				if(val === ''){
-					return false;
-				}
-			}
-			// set the spec for autoNode
-			if(isArray(val)){
-				openLoops.a.push( {l:val, p:cspec.prop} );
-				openLoops.l[cspec.prop] = true;
-				cspec.t = 'loop';
-			}else{
-				cspec.t = 'str';
-			}
-			return cspec;
-		}
 
-		return an;
 
-	}
 
-	// returns a function that, given a context argument,
-	// will render the template defined by dom and directive.
-	function compiler(dom, directive, data, ans){
-		var fns = [], j, jj, cspec, n, target, nodes, itersel, node, inner, dsel, sels, sel, sl, i, h, parts,  pfns = [], p;
-		// autoRendering nodes parsing -> auto-nodes
-		ans = ans || data && getAutoNodes(dom, data);
-		if(data){
-			// for each auto-nodes
-			while(ans.length > 0){
-				cspec = ans[0].cspec;
-				n = ans[0].n;
-				ans.splice(0, 1);
-				if(cspec.t === 'str'){
-					// if the target is a value
-					target = gettarget(n, cspec, false);
-					setsig(target, fns.length);
-					fns[fns.length] = wrapquote(target.quotefn, dataselectfn(cspec.prop));
-				}else{
-					// if the target is a loop
-					itersel = dataselectfn(cspec.sel);
-					target = gettarget(n, cspec, true);
-					nodes = target.nodes;
-					for(j = 0, jj = nodes.length; j < jj; j++){
-						node = nodes[j];
-						inner = compiler(node, false, data, ans);
-						fns[fns.length] = wrapquote(target.quotefn, loopfn(cspec.sel, itersel, inner));
-						target.nodes = [node];
-						setsig(target, fns.length - 1);
-					}
-				}
-			}
-		}
-		// read directives
-		for(sel in directive){
-			if(directive.hasOwnProperty(sel)){
-				i = 0;
-				dsel = directive[sel];
-				sels = sel.split(/\s*,\s*/); //allow selector separation by quotes
-				sl = sels.length;
-				do{
-					if(typeof(dsel) === 'function' || typeof(dsel) === 'string'){
-						// set the value for the node/attr
-						sel = sels[i];
-						target = gettarget(dom, sel, false);
-						setsig(target, fns.length);
-						fns[fns.length] = wrapquote(target.quotefn, dataselectfn(dsel));
-					}else{
-						// loop on node
-						loopgen(dom, sel, dsel, fns);
-					}
-				}while(++i < sl);
-			}
-		}
-		// convert node to a string
-		h = outerHTML(dom);
-			// IE adds an unremovable "selected, value" attribute
-			// hard replace while waiting for a better solution
-		h = h.replace(/<([^>]+)\s(value\=""|selected)\s?([^>]*)>/ig, "<$1 $3>");
 
-		// remove attribute prefix
-		h = h.split(attPfx).join('');
-
-		// slice the html string at "Sig"
-		parts = h.split( Sig );
-		// for each slice add the return string of
-		for(i = 1; i < parts.length; i++){
-			p = parts[i];
-			// part is of the form "fn-number:..." as placed there by setsig.
-			pfns[i] = fns[ parseInt(p, 10) ];
-			parts[i] = p.substring( p.indexOf(':') + 1 );
-		}
-		return concatenator(parts, pfns);
-	}
-	// compile the template with directive
-	// if a context is passed, the autoRendering is triggered automatically
-	// return a function waiting the data as argument
-	function compile(directive, ctxt, template){
-		var rfn = compiler( ( template || this[0] ).cloneNode(true), directive, ctxt);
-		return function(context){
-			return rfn({context:context});
-		};
-	}
 	//compile with the directive as argument
 	// run the template function on the context argument
 	// return an HTML string
@@ -629,17 +796,7 @@ $p.core = function(sel, ctxt, plugins){
 		return this;
 	}
 
-	// compile the template with autoRender
-	// run the template function on the context argument
-	// return an HTML string
-	function autoRender(ctxt, directive){
-		var fn = plugins.compile( directive, ctxt, this[0] );
-		for(var i = 0, ii = this.length; i < ii; i++){
-			this[i] = replaceWith( this[i], fn( ctxt, false));
-		}
-		context = null;
-		return this;
-	}
+
 
 	function replaceWith(elm, html) {
 		var ne,

@@ -693,7 +693,7 @@
     {
      if (sel && !sel[0] && !sel.length)
       sel = [sel];
-    
+
      return core(sel, ctxt || false);
     }
     
@@ -796,8 +796,13 @@
                                 {
                                  $p.plugins.find = function(n, sel)
                                                     {
-                                                     n = n === document ? n.body : n;
-                                                     return typeof n === 'string' ? $$(n) : $(n).select(sel);
+                                                     n = n === document 
+                                                          ? n.body 
+                                                          : n;
+                                                          
+                                                     return typeof n === 'string' 
+                                                             ? $$(n) 
+                                                             : $(n).select(sel);
                                                     };
                                 }
                                 
